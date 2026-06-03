@@ -377,8 +377,9 @@ body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-heigh
 table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
 th{background:#1e293b;padding:9px 10px;text-align:left;color:#94a3b8;font-weight:600;
    border-bottom:1px solid #334155;position:sticky;top:0;z-index:2;
-   overflow:hidden;resize:horizontal;min-width:60px;white-space:nowrap}
-th::after{content:'';position:absolute;right:0;top:20%;height:60%;width:3px;background:#334155;cursor:col-resize}
+   overflow:hidden;min-width:60px;white-space:nowrap;user-select:none}
+.resizer{position:absolute;right:0;top:0;height:100%;width:5px;cursor:col-resize;background:transparent;z-index:3}
+.resizer:hover,.resizer.active{background:#6366f1}
 td{padding:8px 10px;border-bottom:1px solid #1a2535;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 tr:hover td{background:#1a2535}
 .badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;white-space:nowrap}
@@ -423,6 +424,36 @@ tr:hover td{background:#1a2535}
 </table>
 </div>
 <div class="pager">${pagerLinks.join('')}</div>
+<script>
+(function(){
+  var ths = document.querySelectorAll('th');
+  ths.forEach(function(th){
+    th.style.position = 'relative';
+    var r = document.createElement('div');
+    r.className = 'resizer';
+    th.appendChild(r);
+    var startX, startW;
+    r.addEventListener('mousedown', function(e){
+      startX = e.pageX;
+      startW = th.offsetWidth;
+      r.classList.add('active');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+    function onMove(e){
+      var w = Math.max(60, startW + (e.pageX - startX));
+      th.style.width = w + 'px';
+      th.style.minWidth = w + 'px';
+    }
+    function onUp(){
+      r.classList.remove('active');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+  });
+})();
+</script>
 </body></html>`);
 });
 
