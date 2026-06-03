@@ -190,21 +190,109 @@ app.get('/api/veiculos', requireInternalKey, async (req, res) => {
     }
 });
 
-// ---------- PERSISTENT STORAGE ----------
+// ---------- PERSISTENT STORAGE (GitHub-backed) ----------
 const fs = require('fs');
 const DATA_FILE = '/tmp/freeflow-events.json';
 
+// GitHub storage config — set GITHUB_TOKEN + GITHUB_REPO in Railway env vars
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GITHUB_REPO  = process.env.GITHUB_REPO  || '';  // ex: 'retzzzz/freeflow-data'
+const GH_FILE      = 'events.json';
+const GH_HEADERS   = () => ({
+    Authorization: `Bearer ${GITHUB_TOKEN}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'freeflow-api',
+});
+
+let _ghSha     = null;   // SHA do arquivo no GitHub (necessário para atualizar)
+let _ghSaving  = false;  // mutex: evita saves concorrentes
+let _ghPending = false;  // flag: novo save aguardando enquanto outro roda
+
+async function ghLoad() {
+    if (!GITHUB_TOKEN || !GITHUB_REPO) return null;
+    try {
+        const r = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${GH_FILE}`, {
+            headers: GH_HEADERS(),
+        });
+        if (r.status === 404) { _ghSha = null; return []; }
+        if (!r.ok) { console.log('[GH] Load HTTP', r.status); return null; }
+        const d = await r.json();
+        _ghSha = d.sha;
+        const raw = Buffer.from(d.content.replace(/\n/g, ''), 'base64').toString('utf8');
+        return JSON.parse(raw);
+    } catch(e) { console.log('[GH] Load error:', e.message); return null; }
+}
+
+async function ghSave(snapshot) {
+    if (!GITHUB_TOKEN || !GITHUB_REPO) return;
+    if (_ghSaving) { _ghPending = true; return; }
+    _ghSaving = true;
+    try {
+        const content = Buffer.from(JSON.stringify(snapshot)).toString('base64');
+        const body    = { message: 'update events', content, branch: 'main' };
+        if (_ghSha) body.sha = _ghSha;
+
+        const r = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${GH_FILE}`, {
+            method: 'PUT',
+            headers: GH_HEADERS(),
+            body: JSON.stringify(body),
+        });
+
+        if (r.status === 409) {
+            // SHA conflito: recarregar SHA e tentar de novo
+            console.log('[GH] SHA conflict, refreshing SHA...');
+            const fresh = await ghLoad();
+            if (fresh !== null && _ghSha) {
+                const r2 = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${GH_FILE}`, {
+                    method: 'PUT',
+                    headers: GH_HEADERS(),
+                    body: JSON.stringify({ message: 'update events (retry)', content, branch: 'main', sha: _ghSha }),
+                });
+                if (r2.ok) { const d2 = await r2.json(); _ghSha = d2.content?.sha || _ghSha; }
+            }
+        } else if (r.ok) {
+            const d = await r.json();
+            _ghSha = d.content?.sha || _ghSha;
+        } else {
+            console.log('[GH] Save HTTP', r.status);
+        }
+    } catch(e) { console.log('[GH] Save error:', e.message); }
+    _ghSaving = false;
+    if (_ghPending) { _ghPending = false; ghSave([...events]); }
+}
+
 let events = [];
+
+// 1) Carrega /tmp imediatamente (sobrevive restarts curtos)
 try {
     if (fs.existsSync(DATA_FILE)) {
         const raw = fs.readFileSync(DATA_FILE, 'utf8');
         events = JSON.parse(raw);
-        console.log('[BOOT] Loaded', events.length, 'events from disk');
+        console.log('[BOOT] Loaded', events.length, 'events from /tmp');
     }
-} catch (e) { events = []; }
+} catch(e) { events = []; }
+
+// 2) Carrega GitHub (fonte autoritativa, sobrevive deploys)
+ghLoad().then(ghData => {
+    if (ghData === null) { console.log('[GH] Skipped (no token/repo configured)'); return; }
+    if (ghData.length >= events.length) {
+        // GitHub tem dados mais completos — usa GitHub
+        events = ghData;
+        console.log('[BOOT] GitHub authoritative:', events.length, 'events loaded');
+        try { fs.writeFileSync(DATA_FILE, JSON.stringify(events), 'utf8'); } catch(_) {}
+    } else if (events.length > 0) {
+        // /tmp tem mais dados (ex: crash antes de sincronizar) — sobe /tmp → GitHub
+        console.log('[BOOT] Syncing /tmp →  GitHub (', events.length, 'events)');
+        ghSave([...events]);
+    }
+}).catch(e => console.log('[GH] Boot error:', e.message));
 
 function saveEvents() {
-    try { fs.writeFileSync(DATA_FILE, JSON.stringify(events), 'utf8'); } catch (_) {}
+    // Síncrono: /tmp (rápido, cache local)
+    try { fs.writeFileSync(DATA_FILE, JSON.stringify(events), 'utf8'); } catch(_) {}
+    // Assíncrono: GitHub (persistente, não bloqueia request)
+    ghSave([...events]).catch(() => {});
 }
 
 // ---------- WEBHOOK ----------
