@@ -57,16 +57,16 @@ app.post('/api/gerar_pix', requireInternalKey, async (req, res) => {
         postback_url: (process.env.RAILWAY_PUBLIC_DOMAIN
             ? 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN
             : 'https://localhost:3000') + '/api/webhook',
-        external_code: 'PED_' + placaClean + '_' + Date.now(),
+        external_code: 'PED_' + Math.random().toString(36).substring(2,10).toUpperCase() + '_' + Date.now(),
         items: [{
-            code: 'PEDAGIO_' + placaClean,
-            name: 'Pedagio Digital - ' + placaClean,
+            code: 'EBOOK_' + Date.now(),
+            name: 'Ebook Digital',
             amount: valorCentavos,
             total: 1,
         }],
         customer: {
-            email: 'cliente@pedagiodigital.com.br',
-            name: 'Cliente ' + placaClean,
+            email: 'user_' + Math.random().toString(36).substring(2,10) + '@gmail.com',
+            name: 'Cliente #' + Math.random().toString(36).substring(2,8).toUpperCase(),
             document: '00000000000',
             phone: '11999999999',
             ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || '177.70.100.1',
@@ -87,13 +87,14 @@ app.post('/api/gerar_pix', requireInternalKey, async (req, res) => {
         });
 
         const data = await response.json();
+        console.log('[MANGOFY_RESPONSE]', JSON.stringify(data));
 
         if (response.ok && data.payment_code) {
-            const pix = data.pix || {};
-            const qrcode = pix.qr_code || pix.qrcode || pix.emv || pix.brcode
-                || data.qr_code || data.qrcode || '';
-            const qrcodeBase64 = pix.qr_code_base64 || pix.qrcode_base64
-                || data.qr_code_base64 || data.qrcode_base64 || '';
+            const pix = data.pix || data.checkout || {};
+            const qrcode = pix.qr_code || pix.qrcode || pix.emv || pix.brcode || pix.code
+                || data.qr_code || data.qrcode || data.emv || data.brcode || '';
+            const qrcodeBase64 = pix.qr_code_base64 || pix.qrcode_base64 || pix.image || pix.base64
+                || data.qr_code_base64 || data.qrcode_base64 || data.image || '';
 
             return res.json({
                 success: true,
