@@ -2,15 +2,40 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+const ALLOWED_ORIGINS = [
+    'https://www.freeflow-pedagio.site',
+    'https://freeflow-pedagio.site',
+];
+
+const INTERNAL_KEY = process.env.INTERNAL_KEY || 'fd-k9x2mq7v4n8p1w6j3t5r';
+
+app.use(cors({
+    origin: (origin, cb) => {
+        if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+        return cb(new Error('Not allowed'));
+    },
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'X-Internal-Key'],
+}));
+
 app.use(express.json());
+
+// Block direct browser access to API routes
+function requireInternalKey(req, res, next) {
+    const key = req.headers['x-internal-key'];
+    if (key !== INTERNAL_KEY) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    next();
+}
 
 const MANGOFY_API_KEY = process.env.MANGOFY_API_KEY || '2cb435b12f2f8431fbd9b7e1f0b34540e2axyl1axlbg34ckxjxaxvbyool0oen';
 const MANGOFY_STORE_CODE = process.env.MANGOFY_STORE_CODE || 'd2b22f8faf5a2081e772328755ce7349';
 const MANGOFY_API_URL = 'https://checkout.mangofy.com.br/api/v1';
 
 // ---------- GERAR PIX ----------
-app.post('/api/gerar_pix', async (req, res) => {
+app.post('/api/gerar_pix', requireInternalKey, async (req, res) => {
     const { valorTransacao, placa } = req.body || {};
     const valor = parseFloat(valorTransacao) || 0;
     const placaClean = (placa || '').toUpperCase().trim();
@@ -88,7 +113,7 @@ app.post('/api/gerar_pix', async (req, res) => {
 });
 
 // ---------- CONSULTAR STATUS ----------
-app.post('/api/consultar_status_pix', async (req, res) => {
+app.post('/api/consultar_status_pix', requireInternalKey, async (req, res) => {
     const { transaction_id } = req.body || {};
     const paymentCode = (transaction_id || '').trim();
 
@@ -125,7 +150,7 @@ app.post('/api/consultar_status_pix', async (req, res) => {
 });
 
 // ---------- VEICULOS ----------
-app.get('/api/veiculos', async (req, res) => {
+app.get('/api/veiculos', requireInternalKey, async (req, res) => {
     const placa = (req.query.placa || '').toUpperCase().trim();
 
     if (!placa || !/^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(placa)) {
@@ -175,8 +200,8 @@ app.post('/api/webhook', (req, res) => {
     res.json({ received: true });
 });
 
-// ---------- HEALTH ----------
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'freedigitalflow-api' }));
+// ---------- HEALTH (hidden) ----------
+app.get('/', (req, res) => res.status(404).send('Not found'));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('API running on port ' + PORT));
