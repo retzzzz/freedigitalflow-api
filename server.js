@@ -87,7 +87,6 @@ app.post('/api/gerar_pix', requireInternalKey, async (req, res) => {
         });
 
         const data = await response.json();
-        console.log('[MANGOFY_RESPONSE]', JSON.stringify(data));
 
         if (response.ok && data.payment_code) {
             const pix = data.pix || data.checkout || {};
