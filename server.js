@@ -658,4 +658,4 @@ document.getElementById('btnLimpar').addEventListener('click', function(e){
 app.get('/', (req, res) => res.status(404).send('Not found'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('API running on port ' + PORT));
+app.listen(PORT, () => console.log('API running on port ' + PORT + ' — storage: ' + (GITHUB_REPO ? 'GitHub (' + GITHUB_REPO + ')' : '/tmp only')));
