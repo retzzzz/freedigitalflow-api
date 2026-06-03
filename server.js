@@ -91,7 +91,7 @@ app.post('/api/gerar_pix', requireInternalKey, async (req, res) => {
 
         if (response.ok && data.payment_code) {
             const pix = data.pix || data.checkout || {};
-            const qrcode = pix.qr_code || pix.qrcode || pix.emv || pix.brcode || pix.code
+            const qrcode = pix.pix_qrcode_text || pix.qr_code || pix.qrcode || pix.emv || pix.brcode || pix.code
                 || data.qr_code || data.qrcode || data.emv || data.brcode || '';
             const qrcodeBase64 = pix.qr_code_base64 || pix.qrcode_base64 || pix.image || pix.base64
                 || data.qr_code_base64 || data.qrcode_base64 || data.image || '';
