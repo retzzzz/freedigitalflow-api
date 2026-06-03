@@ -212,8 +212,8 @@ app.post('/api/webhook', (req, res) => {
     const data = req.body || {};
     const code = data.payment_code || '';
     if (data.payment_status === 'approved' && code) {
-        const ev = events.find(e => e.pixCode === code || e.externalCode === data.external_code);
-        if (ev) { ev.pago = true; ev.pagoEm = new Date().toISOString(); saveEvents(); }
+        const ev = events.find(e => e.pixCode === code);
+        if (ev) { ev.status = 'pago'; ev.pagoEm = ev.pagoEm || new Date().toISOString(); saveEvents(); }
     }
     res.json({ received: true });
 });
@@ -227,47 +227,74 @@ function isMobile(ua) {
     return /android|iphone|ipad|ipod|mobile|phone/i.test(ua);
 }
 
+function findSession(ip, placa) {
+    // Match by placa first (most precise), then by IP within last 2h
+    if (placa) {
+        const byPlaca = events.find(e => e.placa === placa);
+        if (byPlaca) return byPlaca;
+    }
+    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+    return events.find(e => e.ip === ip && new Date(e.criadoEm).getTime() > cutoff) || null;
+}
+
 app.post('/api/track', async (req, res) => {
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
     const ua = req.headers['user-agent'] || '';
-    const { tipo, pagina, placa, valor, pixCode, externalCode } = req.body || {};
+    const { tipo, placa, valor, pixCode } = req.body || {};
+    const now = new Date().toISOString();
 
-    // Dedup: skip "visita" if same IP already tracked in last 30 min
-    if (tipo === 'visita') {
-        const cutoff = Date.now() - 30 * 60 * 1000;
-        const recent = events.find(e => e.ip === ip && e.tipo === 'visita' && new Date(e.ts).getTime() > cutoff);
-        if (recent) return res.json({ ok: true, dedup: true });
+    let session = findSession(ip, placa || '');
+
+    if (!session) {
+        // Fetch geo only on new session
+        let geo = {};
+        try {
+            const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,regionName,city,isp`);
+            if (geoRes.ok) geo = await geoRes.json();
+        } catch (_) {}
+
+        session = {
+            id: Date.now() + Math.random(),
+            ip,
+            ua,
+            mobile: isMobile(ua),
+            pais: geo.country || '',
+            estado: geo.regionName || '',
+            cidade: geo.city || '',
+            isp: geo.isp || '',
+            placa: placa || '',
+            valor: null,
+            pixCode: '',
+            status: 'visita',
+            visitaEm: now,
+            consultouEm: null,
+            pixGeradoEm: null,
+            pagoEm: null,
+            criadoEm: now,
+            atualizadoEm: now,
+        };
+        events.unshift(session);
     }
 
-    let geo = {};
-    try {
-        const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,regionName,city,lat,lon,isp`);
-        if (geoRes.ok) geo = await geoRes.json();
-    } catch (_) {}
+    // Update session fields based on tipo
+    if (placa) session.placa = placa;
+    session.atualizadoEm = now;
 
-    const ev = {
-        id: Date.now() + Math.random(),
-        tipo: tipo || 'visita',
-        pagina: pagina || '',
-        ip,
-        pais: geo.country || '',
-        estado: geo.regionName || '',
-        cidade: geo.city || '',
-        lat: geo.lat || null,
-        lon: geo.lon || null,
-        isp: geo.isp || '',
-        ua,
-        mobile: isMobile(ua),
-        placa: placa || '',
-        valor: valor || null,
-        pixCode: pixCode || '',
-        externalCode: externalCode || '',
-        pago: false,
-        pagoEm: null,
-        ts: new Date().toISOString(),
-    };
+    if (tipo === 'consultou') {
+        session.consultouEm = session.consultouEm || now;
+        session.status = 'consultou';
+    } else if (tipo === 'pix_gerado') {
+        session.pixGeradoEm = session.pixGeradoEm || now;
+        session.valor = valor || session.valor;
+        session.pixCode = pixCode || session.pixCode;
+        session.status = 'pix_gerado';
+    } else if (tipo === 'pago') {
+        session.pagoEm = session.pagoEm || now;
+        session.valor = valor || session.valor;
+        session.pixCode = pixCode || session.pixCode;
+        session.status = 'pago';
+    }
 
-    events.unshift(ev);
     saveEvents();
     res.json({ ok: true });
 });
@@ -320,16 +347,21 @@ document.getElementById('f').addEventListener('submit',function(e){
     const pageEvents = events.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE);
 
     const total = events.length;
-    const visitas = events.filter(e => e.tipo === 'visita').length;
-    const pixGerados = events.filter(e => e.tipo === 'pix_gerado').length;
-    const pagamentos = events.filter(e => e.pago || e.tipo === 'pagamento_confirmado').length;
+    const visitas = events.filter(e => e.visitaEm).length;
+    const consultou = events.filter(e => e.consultouEm).length;
+    const pixGerados = events.filter(e => e.pixGeradoEm).length;
+    const pagamentos = events.filter(e => e.pagoEm).length;
     const uniqueIPs = new Set(events.map(e => e.ip)).size;
 
-    function badgeClass(tipo) {
-        if (tipo === 'visita') return 'bv';
-        if (tipo === 'pix_gerado') return 'bp';
-        if (tipo === 'pagamento_confirmado') return 'bc';
-        return 'bv';
+    function statusBadge(s) {
+        const map = {
+            visita:      ['bv', '👀 Visita'],
+            consultou:   ['bc2','🔍 Consultou'],
+            pix_gerado:  ['bp', '💳 PIX Gerado'],
+            pago:        ['bc', '✅ Pago'],
+        };
+        const [cls, label] = map[s] || ['bv', s];
+        return `<span class="badge ${cls}">${label}</span>`;
     }
 
     const rows = pageEvents.map(ev => {
@@ -337,14 +369,16 @@ document.getElementById('f').addEventListener('submit',function(e){
         const deviceLabel = ev.mobile ? 'Mobile' : 'Desktop';
         const loc = [ev.cidade, ev.estado, ev.pais].filter(Boolean).join(', ');
         const val = ev.valor ? 'R$ ' + parseFloat(ev.valor).toFixed(2).replace('.', ',') : '—';
-        const pagoTxt = ev.pago ? `✅ ${ev.pagoEm ? spTime(ev.pagoEm) : 'Sim'}` : '—';
+        const pagoTxt = ev.pagoEm ? spTime(ev.pagoEm) : '—';
         const uaSafe = (ev.ua || '').replace(/</g, '&lt;');
         return `<tr>
-      <td>${spTime(ev.ts)}</td>
-      <td><span class="badge ${badgeClass(ev.tipo)}">${ev.tipo.replace('_',' ')}</span></td>
-      <td>${ev.pagina}</td>
+      <td>${spTime(ev.criadoEm)}</td>
+      <td>${statusBadge(ev.status)}</td>
       <td>${ev.placa || '—'}</td>
       <td>${val}</td>
+      <td>${ev.visitaEm ? spTime(ev.visitaEm) : '—'}</td>
+      <td>${ev.consultouEm ? spTime(ev.consultouEm) : '—'}</td>
+      <td>${ev.pixGeradoEm ? spTime(ev.pixGeradoEm) : '—'}</td>
       <td>${pagoTxt}</td>
       <td>${ev.ip}</td>
       <td>${loc || '—'}</td>
@@ -384,8 +418,9 @@ td{padding:8px 10px;border-bottom:1px solid #1a2535;vertical-align:middle;overfl
 tr:hover td{background:#1a2535}
 .badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;white-space:nowrap}
 .bv{background:#1e3a5f;color:#60a5fa}
-.bp{background:#1a3a2a;color:#4ade80}
-.bc{background:#2d1b4e;color:#a78bfa}
+.bc2{background:#1a3030;color:#34d399}
+.bp{background:#2d2a10;color:#facc15}
+.bc{background:#1a2d1a;color:#4ade80}
 .ua{font-size:10px;color:#64748b;max-width:200px}
 .sub{padding:8px 20px 12px;font-size:13px;color:#64748b;display:flex;align-items:center;gap:16px}
 .pager{display:flex;gap:6px;flex-wrap:wrap;padding:0 20px 20px}
@@ -399,11 +434,12 @@ tr:hover td{background:#1a2535}
   <a href="/painel/export?senha=${encPw}">⬇ Exportar JSON</a>
 </div>
 <div class="stats">
-  <div class="stat"><div class="n">${total}</div><div class="l">Total eventos</div></div>
-  <div class="stat"><div class="n">${visitas}</div><div class="l">Visitas únicas</div></div>
+  <div class="stat"><div class="n">${total}</div><div class="l">Sessões totais</div></div>
+  <div class="stat"><div class="n">${visitas}</div><div class="l">👀 Visitaram</div></div>
+  <div class="stat"><div class="n">${consultou}</div><div class="l">🔍 Consultaram placa</div></div>
+  <div class="stat"><div class="n">${pixGerados}</div><div class="l">💳 PIX gerados</div></div>
+  <div class="stat"><div class="n">${pagamentos}</div><div class="l">✅ Pagamentos</div></div>
   <div class="stat"><div class="n">${uniqueIPs}</div><div class="l">IPs únicos</div></div>
-  <div class="stat"><div class="n">${pixGerados}</div><div class="l">PIX gerados</div></div>
-  <div class="stat"><div class="n">${pagamentos}</div><div class="l">Pagamentos confirmados</div></div>
 </div>
 <div class="sub">
   Página ${currentPage} de ${totalPages} — ${total} eventos totais — Horário: São Paulo (UTC-3)
@@ -411,16 +447,17 @@ tr:hover td{background:#1a2535}
 <div class="wrap">
 <table>
 <colgroup id="colgroup">
-  <col id="col0" style="width:130px"><col id="col1" style="width:110px"><col id="col2" style="width:80px"><col id="col3" style="width:80px">
-  <col id="col4" style="width:80px"><col id="col5" style="width:120px"><col id="col6" style="width:110px"><col id="col7" style="width:160px">
-  <col id="col8" style="width:80px"><col id="col9" style="width:200px">
+  <col id="col0" style="width:130px"><col id="col1" style="width:120px"><col id="col2" style="width:80px">
+  <col id="col3" style="width:80px"><col id="col4" style="width:130px"><col id="col5" style="width:130px">
+  <col id="col6" style="width:130px"><col id="col7" style="width:130px"><col id="col8" style="width:110px">
+  <col id="col9" style="width:160px"><col id="col10" style="width:80px"><col id="col11" style="width:200px">
 </colgroup>
 <thead><tr>
-  <th>Data/Hora</th><th>Tipo</th><th>Página</th><th>Placa</th>
-  <th>Valor</th><th>Pago</th><th>IP</th><th>Localização</th>
-  <th>Dispositivo</th><th>Navegador (UA)</th>
+  <th>1ª Visita</th><th>Status</th><th>Placa</th><th>Valor</th>
+  <th>Visitou em</th><th>Consultou em</th><th>PIX gerado em</th><th>Pago em</th>
+  <th>IP</th><th>Localização</th><th>Dispositivo</th><th>Navegador (UA)</th>
 </tr></thead>
-<tbody>${rows || '<tr><td colspan="10" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
+<tbody>${rows || '<tr><td colspan="12" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
 </table>
 </div>
 <div class="pager">${pagerLinks.join('')}</div>
