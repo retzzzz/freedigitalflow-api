@@ -410,10 +410,10 @@ tr:hover td{background:#1a2535}
 </div>
 <div class="wrap">
 <table>
-<colgroup>
-  <col style="width:130px"><col style="width:110px"><col style="width:80px"><col style="width:80px">
-  <col style="width:80px"><col style="width:110px"><col style="width:110px"><col style="width:160px">
-  <col style="width:80px"><col style="width:200px">
+<colgroup id="colgroup">
+  <col id="col0" style="width:130px"><col id="col1" style="width:110px"><col id="col2" style="width:80px"><col id="col3" style="width:80px">
+  <col id="col4" style="width:80px"><col id="col5" style="width:120px"><col id="col6" style="width:110px"><col id="col7" style="width:160px">
+  <col id="col8" style="width:80px"><col id="col9" style="width:200px">
 </colgroup>
 <thead><tr>
   <th>Data/Hora</th><th>Tipo</th><th>Página</th><th>Placa</th>
@@ -426,28 +426,30 @@ tr:hover td{background:#1a2535}
 <div class="pager">${pagerLinks.join('')}</div>
 <script>
 (function(){
-  var ths = document.querySelectorAll('th');
-  ths.forEach(function(th){
-    th.style.position = 'relative';
+  var ths = document.querySelectorAll('thead th');
+  var cols = document.querySelectorAll('#colgroup col');
+  ths.forEach(function(th, i){
     var r = document.createElement('div');
     r.className = 'resizer';
     th.appendChild(r);
     var startX, startW;
     r.addEventListener('mousedown', function(e){
       startX = e.pageX;
-      startW = th.offsetWidth;
+      startW = cols[i] ? parseInt(cols[i].style.width) || th.offsetWidth : th.offsetWidth;
       r.classList.add('active');
+      document.body.style.cursor = 'col-resize';
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
       e.preventDefault();
+      e.stopPropagation();
     });
     function onMove(e){
-      var w = Math.max(60, startW + (e.pageX - startX));
-      th.style.width = w + 'px';
-      th.style.minWidth = w + 'px';
+      var w = Math.max(50, startW + (e.pageX - startX));
+      if(cols[i]) cols[i].style.width = w + 'px';
     }
     function onUp(){
       r.classList.remove('active');
+      document.body.style.cursor = '';
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     }
