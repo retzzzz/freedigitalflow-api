@@ -190,30 +190,58 @@ app.get('/api/veiculos', requireInternalKey, async (req, res) => {
     }
 });
 
+// ---------- PERSISTENT STORAGE ----------
+const fs = require('fs');
+const DATA_FILE = '/tmp/freeflow-events.json';
+
+let events = [];
+try {
+    if (fs.existsSync(DATA_FILE)) {
+        const raw = fs.readFileSync(DATA_FILE, 'utf8');
+        events = JSON.parse(raw);
+        console.log('[BOOT] Loaded', events.length, 'events from disk');
+    }
+} catch (e) { events = []; }
+
+function saveEvents() {
+    try { fs.writeFileSync(DATA_FILE, JSON.stringify(events), 'utf8'); } catch (_) {}
+}
+
 // ---------- WEBHOOK ----------
 app.post('/api/webhook', (req, res) => {
     const data = req.body || {};
-    // Update payment event if exists
-    const code = data.payment_code || data.external_code || '';
+    const code = data.payment_code || '';
     if (data.payment_status === 'approved' && code) {
-        const ev = events.find(e => e.pixCode === code || (e.externalCode && e.externalCode === data.external_code));
-        if (ev) { ev.pago = true; ev.pagoEm = new Date().toISOString(); }
+        const ev = events.find(e => e.pixCode === code || e.externalCode === data.external_code);
+        if (ev) { ev.pago = true; ev.pagoEm = new Date().toISOString(); saveEvents(); }
     }
     res.json({ received: true });
 });
 
 // ---------- TRACKING ----------
-const events = [];
-const MAX_EVENTS = 5000;
+
+function spTime(iso) {
+    return new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour12: false });
+}
+function isMobile(ua) {
+    return /android|iphone|ipad|ipod|mobile|phone/i.test(ua);
+}
 
 app.post('/api/track', async (req, res) => {
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
     const ua = req.headers['user-agent'] || '';
     const { tipo, pagina, placa, valor, pixCode, externalCode } = req.body || {};
 
+    // Dedup: skip "visita" if same IP already tracked in last 30 min
+    if (tipo === 'visita') {
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        const recent = events.find(e => e.ip === ip && e.tipo === 'visita' && new Date(e.ts).getTime() > cutoff);
+        if (recent) return res.json({ ok: true, dedup: true });
+    }
+
     let geo = {};
     try {
-        const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,regionName,city,lat,lon,isp,query`);
+        const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,regionName,city,lat,lon,isp`);
         if (geoRes.ok) geo = await geoRes.json();
     } catch (_) {}
 
@@ -229,6 +257,7 @@ app.post('/api/track', async (req, res) => {
         lon: geo.lon || null,
         isp: geo.isp || '',
         ua,
+        mobile: isMobile(ua),
         placa: placa || '',
         valor: valor || null,
         pixCode: pixCode || '',
@@ -239,16 +268,22 @@ app.post('/api/track', async (req, res) => {
     };
 
     events.unshift(ev);
-    if (events.length > MAX_EVENTS) events.pop();
-
+    saveEvents();
     res.json({ ok: true });
 });
 
 // ---------- PAINEL ADMIN ----------
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Br@sil2019';
 
+app.get('/painel/export', (req, res) => {
+    if (req.query.senha !== ADMIN_PASSWORD) return res.status(403).send('Forbidden');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="eventos.json"');
+    res.send(JSON.stringify(events, null, 2));
+});
+
 app.get('/painel', (req, res) => {
-    const { senha } = req.query;
+    const { senha, page } = req.query;
 
     if (senha !== ADMIN_PASSWORD) {
         return res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
@@ -272,33 +307,57 @@ button:hover{background:#4f46e5}.err{color:#f87171;font-size:13px;text-align:cen
 </div>
 <script>
 document.getElementById('f').addEventListener('submit',function(e){
-  e.preventDefault();
-  const pw=document.getElementById('pw').value;
+  e.preventDefault();var pw=document.getElementById('pw').value;
   if(pw)window.location.href='/painel?senha='+encodeURIComponent(pw);
-  else{document.getElementById('err').style.display='block';}
+  else document.getElementById('err').style.display='block';
 });
 </script></body></html>`);
     }
 
-    // Stats
+    const PER_PAGE = 100;
+    const currentPage = Math.max(1, parseInt(page) || 1);
+    const totalPages = Math.max(1, Math.ceil(events.length / PER_PAGE));
+    const pageEvents = events.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE);
+
     const total = events.length;
     const visitas = events.filter(e => e.tipo === 'visita').length;
     const pixGerados = events.filter(e => e.tipo === 'pix_gerado').length;
     const pagamentos = events.filter(e => e.pago || e.tipo === 'pagamento_confirmado').length;
     const uniqueIPs = new Set(events.map(e => e.ip)).size;
 
-    const rows = events.slice(0, 200).map(ev => `
-    <tr>
-      <td>${new Date(ev.ts).toLocaleString('pt-BR')}</td>
-      <td><span class="badge badge-${ev.tipo}">${ev.tipo}</span></td>
+    function badgeClass(tipo) {
+        if (tipo === 'visita') return 'bv';
+        if (tipo === 'pix_gerado') return 'bp';
+        if (tipo === 'pagamento_confirmado') return 'bc';
+        return 'bv';
+    }
+
+    const rows = pageEvents.map(ev => {
+        const deviceIcon = ev.mobile ? '📱' : '🖥️';
+        const deviceLabel = ev.mobile ? 'Mobile' : 'Desktop';
+        const loc = [ev.cidade, ev.estado, ev.pais].filter(Boolean).join(', ');
+        const val = ev.valor ? 'R$ ' + parseFloat(ev.valor).toFixed(2).replace('.', ',') : '—';
+        const pagoTxt = ev.pago ? `✅ ${ev.pagoEm ? spTime(ev.pagoEm) : 'Sim'}` : '—';
+        const uaSafe = (ev.ua || '').replace(/</g, '&lt;');
+        return `<tr>
+      <td>${spTime(ev.ts)}</td>
+      <td><span class="badge ${badgeClass(ev.tipo)}">${ev.tipo.replace('_',' ')}</span></td>
       <td>${ev.pagina}</td>
       <td>${ev.placa || '—'}</td>
-      <td>${ev.valor ? 'R$ ' + parseFloat(ev.valor).toFixed(2).replace('.',',') : '—'}</td>
-      <td>${ev.pago ? '✅ Sim' : '—'}</td>
+      <td>${val}</td>
+      <td>${pagoTxt}</td>
       <td>${ev.ip}</td>
-      <td>${ev.cidade}${ev.estado ? ', '+ev.estado : ''}${ev.pais ? ' ('+ev.pais+')' : ''}</td>
-      <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ev.ua}">${ev.ua}</td>
-    </tr>`).join('');
+      <td>${loc || '—'}</td>
+      <td title="${uaSafe}">${deviceIcon} ${deviceLabel}</td>
+      <td class="ua" title="${uaSafe}">${uaSafe}</td>
+    </tr>`;
+    }).join('');
+
+    const encPw = encodeURIComponent(ADMIN_PASSWORD);
+    const pagerLinks = [];
+    for (let i = 1; i <= totalPages; i++) {
+        pagerLinks.push(`<a href="/painel?senha=${encPw}&page=${i}" class="${i===currentPage?'active':''}">${i}</a>`);
+    }
 
     res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -306,45 +365,64 @@ document.getElementById('f').addEventListener('submit',function(e){
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
-.top{background:#1e293b;padding:16px 24px;display:flex;align-items:center;gap:16px;border-bottom:1px solid #334155}
-.top h1{font-size:18px;font-weight:700}
-.top a{margin-left:auto;color:#94a3b8;font-size:13px;text-decoration:none}
+.top{background:#1e293b;padding:14px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #334155;flex-wrap:wrap}
+.top h1{font-size:16px;font-weight:700;flex:1}
+.top a{color:#94a3b8;font-size:13px;text-decoration:none;white-space:nowrap}
 .top a:hover{color:#fff}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;padding:24px}
-.stat{background:#1e293b;border-radius:12px;padding:20px;border:1px solid #334155}
-.stat .n{font-size:32px;font-weight:900;color:#6366f1}
-.stat .l{font-size:13px;color:#94a3b8;margin-top:4px}
-.wrap{padding:0 24px 40px;overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:13px;min-width:900px}
-th{background:#1e293b;padding:10px 12px;text-align:left;color:#94a3b8;font-weight:600;border-bottom:1px solid #334155;position:sticky;top:0}
-td{padding:10px 12px;border-bottom:1px solid #1e293b;vertical-align:middle}
-tr:hover td{background:#1e293b}
-.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
-.badge-visita{background:#1e3a5f;color:#60a5fa}
-.badge-pix_gerado{background:#1a3a2a;color:#4ade80}
-.badge-pagamento_confirmado{background:#2d1b4e;color:#a78bfa}
-h2{padding:0 24px 16px;font-size:15px;color:#94a3b8}
+.stats{display:flex;gap:12px;padding:16px 20px;flex-wrap:wrap}
+.stat{background:#1e293b;border-radius:10px;padding:16px 20px;border:1px solid #334155;min-width:120px;flex:1}
+.stat .n{font-size:28px;font-weight:900;color:#6366f1}
+.stat .l{font-size:12px;color:#94a3b8;margin-top:2px}
+.wrap{padding:0 20px 40px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+th{background:#1e293b;padding:9px 10px;text-align:left;color:#94a3b8;font-weight:600;
+   border-bottom:1px solid #334155;position:sticky;top:0;z-index:2;
+   overflow:hidden;resize:horizontal;min-width:60px;white-space:nowrap}
+th::after{content:'';position:absolute;right:0;top:20%;height:60%;width:3px;background:#334155;cursor:col-resize}
+td{padding:8px 10px;border-bottom:1px solid #1a2535;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:hover td{background:#1a2535}
+.badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;white-space:nowrap}
+.bv{background:#1e3a5f;color:#60a5fa}
+.bp{background:#1a3a2a;color:#4ade80}
+.bc{background:#2d1b4e;color:#a78bfa}
+.ua{font-size:10px;color:#64748b;max-width:200px}
+.sub{padding:8px 20px 12px;font-size:13px;color:#64748b;display:flex;align-items:center;gap:16px}
+.pager{display:flex;gap:6px;flex-wrap:wrap;padding:0 20px 20px}
+.pager a{background:#1e293b;color:#94a3b8;padding:5px 11px;border-radius:6px;text-decoration:none;font-size:13px;border:1px solid #334155}
+.pager a:hover{background:#334155;color:#fff}
+.pager a.active{background:#6366f1;color:#fff;border-color:#6366f1}
 </style></head><body>
 <div class="top">
   <h1>📊 Painel Admin — freeflow-pedagio.site</h1>
-  <a href="/painel?senha=${encodeURIComponent(ADMIN_PASSWORD)}">↻ Atualizar</a>
+  <a href="/painel?senha=${encPw}&page=${currentPage}">↻ Atualizar</a>
+  <a href="/painel/export?senha=${encPw}">⬇ Exportar JSON</a>
 </div>
 <div class="stats">
-  <div class="stat"><div class="n">${total}</div><div class="l">Total de eventos</div></div>
-  <div class="stat"><div class="n">${visitas}</div><div class="l">Visitas</div></div>
+  <div class="stat"><div class="n">${total}</div><div class="l">Total eventos</div></div>
+  <div class="stat"><div class="n">${visitas}</div><div class="l">Visitas únicas</div></div>
   <div class="stat"><div class="n">${uniqueIPs}</div><div class="l">IPs únicos</div></div>
   <div class="stat"><div class="n">${pixGerados}</div><div class="l">PIX gerados</div></div>
   <div class="stat"><div class="n">${pagamentos}</div><div class="l">Pagamentos confirmados</div></div>
 </div>
-<h2>Últimos 200 eventos</h2>
+<div class="sub">
+  Página ${currentPage} de ${totalPages} — ${total} eventos totais — Horário: São Paulo (UTC-3)
+</div>
 <div class="wrap">
 <table>
+<colgroup>
+  <col style="width:130px"><col style="width:110px"><col style="width:80px"><col style="width:80px">
+  <col style="width:80px"><col style="width:110px"><col style="width:110px"><col style="width:160px">
+  <col style="width:80px"><col style="width:200px">
+</colgroup>
 <thead><tr>
-  <th>Data/Hora</th><th>Tipo</th><th>Página</th><th>Placa</th><th>Valor</th><th>Pago</th><th>IP</th><th>Localização</th><th>Navegador</th>
+  <th>Data/Hora</th><th>Tipo</th><th>Página</th><th>Placa</th>
+  <th>Valor</th><th>Pago</th><th>IP</th><th>Localização</th>
+  <th>Dispositivo</th><th>Navegador (UA)</th>
 </tr></thead>
-<tbody>${rows || '<tr><td colspan="9" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
+<tbody>${rows || '<tr><td colspan="10" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
 </table>
 </div>
+<div class="pager">${pagerLinks.join('')}</div>
 </body></html>`);
 });
 
