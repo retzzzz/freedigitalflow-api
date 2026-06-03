@@ -240,7 +240,7 @@ function findSession(ip, placa) {
 app.post('/api/track', async (req, res) => {
     const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
     const ua = req.headers['user-agent'] || '';
-    const { tipo, placa, valor, pixCode } = req.body || {};
+    const { tipo, placa, valor, pixCode, utm } = req.body || {};
     const now = new Date().toISOString();
 
     let session = findSession(ip, placa || '');
@@ -266,6 +266,7 @@ app.post('/api/track', async (req, res) => {
             valor: null,
             pixCode: '',
             status: 'visita',
+            utm: utm || {},
             visitaEm: now,
             consultouEm: null,
             pixGeradoEm: null,
@@ -359,6 +360,8 @@ document.getElementById('f').addEventListener('submit',function(e){
     const pixGerados = events.filter(e => e.pixGeradoEm).length;
     const pagamentos = events.filter(e => e.pagoEm).length;
     const uniqueIPs = new Set(events.map(e => e.ip)).size;
+    const receita = events.filter(e => e.pagoEm && e.valor).reduce((s, e) => s + parseFloat(e.valor || 0), 0);
+    const pct = (n, d) => d > 0 ? Math.round(n / d * 100) : 0;
 
     function statusBadge(s) {
         const map = {
@@ -378,7 +381,8 @@ document.getElementById('f').addEventListener('submit',function(e){
         const val = ev.valor ? 'R$ ' + parseFloat(ev.valor).toFixed(2).replace('.', ',') : '—';
         const pagoTxt = ev.pagoEm ? spTime(ev.pagoEm) : '—';
         const uaSafe = (ev.ua || '').replace(/</g, '&lt;');
-        return `<tr>
+        const utmSrc = (ev.utm && ev.utm.utm_source) ? ev.utm.utm_source : (ev.utm && ev.utm.gclid ? 'google/cpc' : '—');
+        return `<tr data-status="${ev.status}" data-placa="${(ev.placa||'').toLowerCase()}">
       <td>${spTime(ev.criadoEm)}</td>
       <td>${statusBadge(ev.status)}</td>
       <td>${ev.placa || '—'}</td>
@@ -391,6 +395,7 @@ document.getElementById('f').addEventListener('submit',function(e){
       <td>${loc || '—'}</td>
       <td title="${uaSafe}">${deviceIcon} ${deviceLabel}</td>
       <td class="ua" title="${uaSafe}">${uaSafe}</td>
+      <td>${utmSrc}</td>
     </tr>`;
     }).join('');
 
@@ -443,13 +448,24 @@ tr:hover td{background:#1a2535}
 <div class="stats">
   <div class="stat"><div class="n">${total}</div><div class="l">Sessões totais</div></div>
   <div class="stat"><div class="n">${visitas}</div><div class="l">👀 Visitaram</div></div>
-  <div class="stat"><div class="n">${consultou}</div><div class="l">🔍 Consultaram placa</div></div>
-  <div class="stat"><div class="n">${pixGerados}</div><div class="l">💳 PIX gerados</div></div>
-  <div class="stat"><div class="n">${pagamentos}</div><div class="l">✅ Pagamentos</div></div>
+  <div class="stat"><div class="n">${consultou} <span style="font-size:14px;color:#94a3b8">${pct(consultou,visitas)}%</span></div><div class="l">🔍 Consultaram placa</div></div>
+  <div class="stat"><div class="n">${pixGerados} <span style="font-size:14px;color:#94a3b8">${pct(pixGerados,visitas)}%</span></div><div class="l">💳 PIX gerados</div></div>
+  <div class="stat"><div class="n">${pagamentos} <span style="font-size:14px;color:#94a3b8">${pct(pagamentos,visitas)}%</span></div><div class="l">✅ Pagamentos</div></div>
+  <div class="stat"><div class="n" style="color:#4ade80">R$&nbsp;${receita.toFixed(2).replace('.',',')}</div><div class="l">💰 Receita total</div></div>
   <div class="stat"><div class="n">${uniqueIPs}</div><div class="l">IPs únicos</div></div>
 </div>
-<div class="sub">
-  Página ${currentPage} de ${totalPages} — ${total} eventos totais — Horário: São Paulo (UTC-3)
+<div class="sub" style="flex-wrap:wrap;gap:10px;">
+  <span>Página ${currentPage} de ${totalPages} — ${total} eventos totais — Horário: São Paulo (UTC-3)</span>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <input id="filtroPlaca" type="text" placeholder="Filtrar placa..." style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:5px 10px;color:#fff;font-size:12px;outline:none;width:130px">
+    <select id="filtroStatus" style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:5px 10px;color:#fff;font-size:12px;outline:none;">
+      <option value="">Todos status</option>
+      <option value="visita">👀 Visita</option>
+      <option value="consultou">🔍 Consultou</option>
+      <option value="pix_gerado">💳 PIX Gerado</option>
+      <option value="pago">✅ Pago</option>
+    </select>
+  </div>
 </div>
 <div class="wrap">
 <table>
@@ -458,13 +474,14 @@ tr:hover td{background:#1a2535}
   <col id="col3" style="width:80px"><col id="col4" style="width:130px"><col id="col5" style="width:130px">
   <col id="col6" style="width:130px"><col id="col7" style="width:130px"><col id="col8" style="width:110px">
   <col id="col9" style="width:160px"><col id="col10" style="width:80px"><col id="col11" style="width:200px">
+  <col id="col12" style="width:100px">
 </colgroup>
 <thead><tr>
   <th>1ª Visita</th><th>Status</th><th>Placa</th><th>Valor</th>
   <th>Visitou em</th><th>Consultou em</th><th>PIX gerado em</th><th>Pago em</th>
-  <th>IP</th><th>Localização</th><th>Dispositivo</th><th>Navegador (UA)</th>
+  <th>IP</th><th>Localização</th><th>Dispositivo</th><th>Navegador (UA)</th><th>Fonte UTM</th>
 </tr></thead>
-<tbody>${rows || '<tr><td colspan="12" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
+<tbody id="tBody">${rows || '<tr><td colspan="13" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
 </table>
 </div>
 <div class="pager">${pagerLinks.join('')}</div>
@@ -497,6 +514,23 @@ document.getElementById('btnLimpar').addEventListener('click', function(e){
       .catch(function(){ document.getElementById('clearErr').style.display='block'; });
   };
 });
+
+// Filtro client-side
+(function(){
+  var filtroPlaca = document.getElementById('filtroPlaca');
+  var filtroStatus = document.getElementById('filtroStatus');
+  function aplicarFiltro(){
+    var pl = (filtroPlaca.value||'').toLowerCase().trim();
+    var st = filtroStatus.value;
+    document.querySelectorAll('#tBody tr[data-status]').forEach(function(tr){
+      var matchP = !pl || (tr.dataset.placa||'').includes(pl);
+      var matchS = !st || tr.dataset.status === st;
+      tr.style.display = (matchP && matchS) ? '' : 'none';
+    });
+  }
+  if(filtroPlaca) filtroPlaca.addEventListener('input', aplicarFiltro);
+  if(filtroStatus) filtroStatus.addEventListener('change', aplicarFiltro);
+})();
 
 (function(){
   var ths = document.querySelectorAll('thead th');
