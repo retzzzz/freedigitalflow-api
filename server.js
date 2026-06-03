@@ -309,6 +309,13 @@ app.get('/painel/export', (req, res) => {
     res.send(JSON.stringify(events, null, 2));
 });
 
+app.get('/painel/clear', (req, res) => {
+    if (req.query.senha !== ADMIN_PASSWORD) return res.status(403).json({ error: 'Senha incorreta' });
+    events.length = 0;
+    saveEvents();
+    res.json({ ok: true });
+});
+
 app.get('/painel', (req, res) => {
     const { senha, page } = req.query;
 
@@ -430,8 +437,8 @@ tr:hover td{background:#1a2535}
 </style></head><body>
 <div class="top">
   <h1>📊 Painel Admin — freeflow-pedagio.site</h1>
-  <a href="/painel?senha=${encPw}&page=${currentPage}">↻ Atualizar</a>
   <a href="/painel/export?senha=${encPw}">⬇ Exportar JSON</a>
+  <a href="#" id="btnLimpar" style="color:#f87171">🗑 Limpar Dados</a>
 </div>
 <div class="stats">
   <div class="stat"><div class="n">${total}</div><div class="l">Sessões totais</div></div>
@@ -462,6 +469,35 @@ tr:hover td{background:#1a2535}
 </div>
 <div class="pager">${pagerLinks.join('')}</div>
 <script>
+document.getElementById('btnLimpar').addEventListener('click', function(e){
+  e.preventDefault();
+  var modal = document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:9999';
+  modal.innerHTML = '<div style="background:#1e293b;border-radius:14px;padding:32px;width:min(360px,92vw);border:1px solid #334155;box-shadow:0 20px 60px #0008">'
+    +'<h3 style="color:#f87171;margin:0 0 8px;font-size:17px">🗑 Limpar todos os dados?</h3>'
+    +'<p style="color:#94a3b8;font-size:13px;margin:0 0 20px">Esta ação é irreversível. Todos os registros serão apagados permanentemente.</p>'
+    +'<input type="password" id="clearPw" placeholder="Digite a senha para confirmar" style="width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:11px 13px;color:#fff;font-size:14px;outline:none;box-sizing:border-box;margin-bottom:14px">'
+    +'<div style="display:flex;gap:10px">'
+    +'<button id="clearCancel" style="flex:1;background:#334155;color:#94a3b8;border:none;border-radius:8px;padding:11px;font-size:14px;cursor:pointer">Cancelar</button>'
+    +'<button id="clearConfirm" style="flex:1;background:#dc2626;color:#fff;border:none;border-radius:8px;padding:11px;font-size:14px;font-weight:700;cursor:pointer">Apagar tudo</button>'
+    +'</div>'
+    +'<p id="clearErr" style="color:#f87171;font-size:12px;margin:10px 0 0;display:none;text-align:center">Senha incorreta.</p>'
+    +'</div>';
+  document.body.appendChild(modal);
+  document.getElementById('clearCancel').onclick = function(){ document.body.removeChild(modal); };
+  modal.addEventListener('click', function(ev){ if(ev.target===modal) document.body.removeChild(modal); });
+  document.getElementById('clearConfirm').onclick = function(){
+    var pw = document.getElementById('clearPw').value;
+    fetch('/painel/clear?senha='+encodeURIComponent(pw))
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(d.ok){ document.body.removeChild(modal); window.location.href='/painel?senha='+encodeURIComponent(pw); }
+        else { document.getElementById('clearErr').style.display='block'; }
+      })
+      .catch(function(){ document.getElementById('clearErr').style.display='block'; });
+  };
+});
+
 (function(){
   var ths = document.querySelectorAll('thead th');
   var cols = document.querySelectorAll('#colgroup col');
