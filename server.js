@@ -69,6 +69,7 @@ app.post('/api/gerar_pix', requireInternalKey, async (req, res) => {
             name: 'Cliente ' + placaClean,
             document: '00000000000',
             phone: '11999999999',
+            ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || '177.70.100.1',
         },
         pix: { expires_in_days: 1 },
     };
