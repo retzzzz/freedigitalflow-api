@@ -500,17 +500,23 @@ button:hover{background:#4f46e5}.err{color:#f87171;font-size:13px;text-align:cen
 <div class="box">
   <h2>🔒 Painel Admin</h2>
   <form id="f">
-    <input type="password" id="pw" placeholder="Senha" autocomplete="off">
+    <input type="password" id="pw" placeholder="Senha" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
     <button type="submit">Entrar</button>
     <p class="err" id="err">Senha incorreta</p>
   </form>
 </div>
 <script>
 document.getElementById('f').addEventListener('submit',function(e){
-  e.preventDefault();var pw=document.getElementById('pw').value;
-  if(pw)window.location.href='/painel?senha='+encodeURIComponent(pw);
-  else document.getElementById('err').style.display='block';
+  e.preventDefault();
+  var pw=document.getElementById('pw').value.trim();
+  if(pw){
+    var url='/painel?senha='+encodeURIComponent(pw);
+    window.location.replace(url);
+  } else {
+    document.getElementById('err').style.display='block';
+  }
 });
+document.getElementById('pw').focus();
 </script></body></html>`);
     }
 
