@@ -673,7 +673,8 @@ tr:hover td{background:#ffffff06}
 .muted{color:var(--t4)}
 .td-placa{font-weight:600;color:var(--t1);font-family:'SF Mono',SFMono-Regular,ui-monospace,monospace;font-size:12px;letter-spacing:0.5px}
 .td-val{font-weight:600;color:var(--green)}
-.td-device{display:flex;align-items:center;gap:6px;color:var(--t3)}
+.td-device{color:var(--t3);white-space:nowrap}
+.td-device svg{display:inline-block;vertical-align:middle;margin-right:4px}
 .td-ip{font-family:'SF Mono',SFMono-Regular,ui-monospace,monospace;font-size:11px;color:var(--t4)}
 
 /* Badges */
