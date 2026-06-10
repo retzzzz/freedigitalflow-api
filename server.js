@@ -20,6 +20,7 @@ app.use(cors({
 }));
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 // Block direct browser access to API routes
 function requireInternalKey(req, res, next) {
@@ -467,59 +468,101 @@ app.post('/api/track', async (req, res) => {
 
 // ---------- PAINEL ADMIN ----------
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Br@sil2019';
+const ADMIN_TOKEN = Buffer.from('ff:' + ADMIN_PASSWORD).toString('base64');
+
+function parseCookies(req) {
+    const obj = {};
+    (req.headers.cookie || '').split(';').forEach(c => {
+        const [k, ...v] = c.trim().split('=');
+        if (k) obj[k] = decodeURIComponent(v.join('='));
+    });
+    return obj;
+}
+function isAdmin(req) {
+    return parseCookies(req).ff_admin === ADMIN_TOKEN;
+}
+function setAdminCookie(res) {
+    res.setHeader('Set-Cookie', `ff_admin=${ADMIN_TOKEN}; Path=/painel; HttpOnly; SameSite=Strict; Max-Age=86400`);
+}
+
+app.post('/painel/login', (req, res) => {
+    if ((req.body.senha || '').trim() !== ADMIN_PASSWORD) {
+        return res.redirect('/painel?erro=1');
+    }
+    setAdminCookie(res);
+    res.redirect('/painel');
+});
+
+app.get('/painel/logout', (req, res) => {
+    res.setHeader('Set-Cookie', 'ff_admin=; Path=/painel; HttpOnly; SameSite=Strict; Max-Age=0');
+    res.redirect('/painel');
+});
 
 app.get('/painel/export', (req, res) => {
-    if (req.query.senha !== ADMIN_PASSWORD) return res.status(403).send('Forbidden');
+    if (!isAdmin(req)) return res.status(403).send('Forbidden');
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', 'attachment; filename="eventos.json"');
     res.send(JSON.stringify(events, null, 2));
 });
 
-app.get('/painel/clear', (req, res) => {
-    if (req.query.senha !== ADMIN_PASSWORD) return res.status(403).json({ error: 'Senha incorreta' });
+app.post('/painel/clear', (req, res) => {
+    if (!isAdmin(req)) return res.status(403).json({ error: 'Não autorizado' });
     events.length = 0;
     saveEvents();
     res.json({ ok: true });
 });
 
 app.get('/painel', (req, res) => {
-    const { senha, page } = req.query;
-
-    if (senha !== ADMIN_PASSWORD) {
+    // --- LOGIN PAGE ---
+    if (!isAdmin(req)) {
+        const erro = req.query.erro === '1';
         return res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Acesso restrito</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#0f172a;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.box{background:#1e293b;border-radius:16px;padding:40px 32px;width:min(360px,92vw);box-shadow:0 20px 60px #0008}
-h2{color:#fff;font-size:20px;margin-bottom:24px;text-align:center}
-input{width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px 14px;color:#fff;font-size:15px;outline:none;margin-bottom:16px}
-input:focus{border-color:#6366f1}
-button{width:100%;background:#6366f1;color:#fff;border:none;border-radius:8px;padding:13px;font-size:15px;font-weight:700;cursor:pointer}
-button:hover{background:#4f46e5}.err{color:#f87171;font-size:13px;text-align:center;margin-top:10px;display:none}
+<title>Login — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,sans-serif;background:#09090b;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.login-card{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:48px 36px 40px;width:min(400px,100%);position:relative;overflow:hidden}
+.login-card::before{content:'';position:absolute;top:-1px;left:50%;transform:translateX(-50%);width:120px;height:3px;background:linear-gradient(90deg,transparent,#6366f1,transparent);border-radius:0 0 4px 4px}
+.lock-icon{width:48px;height:48px;border-radius:12px;background:#27272a;display:flex;align-items:center;justify-content:center;margin:0 auto 28px}
+.lock-icon svg{color:#a1a1aa}
+h1{font-size:20px;font-weight:700;color:#fafafa;text-align:center;margin-bottom:6px;letter-spacing:-0.3px}
+.subtitle{font-size:13px;color:#71717a;text-align:center;margin-bottom:32px}
+.field{position:relative;margin-bottom:20px}
+.field svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:#52525b;pointer-events:none}
+.field input{width:100%;background:#09090b;border:1px solid #27272a;border-radius:10px;padding:13px 14px 13px 42px;color:#fafafa;font-size:14px;font-family:inherit;outline:none;transition:border-color .2s}
+.field input:focus{border-color:#6366f1;box-shadow:0 0 0 3px #6366f120}
+.field input::placeholder{color:#52525b}
+.btn{width:100%;background:#fafafa;color:#09090b;border:none;border-radius:10px;padding:13px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;transition:all .15s}
+.btn:hover{background:#e4e4e7;transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.err-msg{color:#ef4444;font-size:13px;text-align:center;margin-top:16px;display:${erro ? 'block' : 'none'}}
+.footer{text-align:center;margin-top:28px;padding-top:20px;border-top:1px solid #27272a}
+.footer span{font-size:11px;color:#3f3f46;letter-spacing:0.5px}
 </style></head><body>
-<div class="box">
-  <h2>🔒 Painel Admin</h2>
-  <form id="f">
-    <input type="password" id="pw" placeholder="Senha" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
-    <button type="submit">Entrar</button>
-    <p class="err" id="err">Senha incorreta</p>
+<div class="login-card">
+  <div class="lock-icon">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+  </div>
+  <h1>Acesso restrito</h1>
+  <p class="subtitle">Painel de controle Free Flow</p>
+  <form method="POST" action="/painel/login">
+    <div class="field">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <input type="password" name="senha" placeholder="Senha de acesso" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus required>
+    </div>
+    <button type="submit" class="btn">Entrar</button>
+    <p class="err-msg">Senha incorreta. Tente novamente.</p>
   </form>
+  <div class="footer"><span>FREE FLOW ADMIN</span></div>
 </div>
-<script>
-document.getElementById('f').addEventListener('submit',function(e){
-  e.preventDefault();
-  var pw=document.getElementById('pw').value.trim();
-  if(pw){
-    var url='/painel?senha='+encodeURIComponent(pw);
-    window.location.replace(url);
-  } else {
-    document.getElementById('err').style.display='block';
-  }
-});
-document.getElementById('pw').focus();
-</script></body></html>`);
+</body></html>`);
     }
 
+    // --- DASHBOARD ---
+    const { page } = req.query;
     const PER_PAGE = 100;
     const currentPage = Math.max(1, parseInt(page) || 1);
     const totalPages = Math.max(1, Math.ceil(events.length / PER_PAGE));
@@ -533,230 +576,321 @@ document.getElementById('pw').focus();
     const uniqueIPs = new Set(events.map(e => e.ip)).size;
     const receita = events.filter(e => e.pagoEm && e.valor).reduce((s, e) => s + parseFloat(e.valor || 0), 0);
     const pct = (n, d) => d > 0 ? Math.round(n / d * 100) : 0;
+    const brEvents = events.filter(e => e.pais === 'Brazil').length;
+    const intEvents = total - brEvents;
 
     function statusBadge(s) {
         const map = {
-            visita:      ['bv', '👀 Visita'],
-            consultou:   ['bc2','🔍 Consultou'],
-            pix_gerado:  ['bp', '💳 PIX Gerado'],
-            pago:        ['bc', '✅ Pago'],
+            visita:      ['st-visit',  'Visita'],
+            consultou:   ['st-search', 'Consultou'],
+            pix_gerado:  ['st-pix',    'PIX Gerado'],
+            pago:        ['st-paid',   'Pago'],
         };
-        const [cls, label] = map[s] || ['bv', s];
-        return `<span class="badge ${cls}">${label}</span>`;
+        const [cls, label] = map[s] || ['st-visit', s];
+        return '<span class="badge ' + cls + '">' + label + '</span>';
     }
 
     const rows = pageEvents.map(ev => {
-        const deviceIcon = ev.mobile ? '📱' : '🖥️';
-        const deviceLabel = ev.mobile ? 'Mobile' : 'Desktop';
-        const loc = [ev.cidade, ev.estado, ev.pais].filter(Boolean).join(', ');
-        const val = ev.valor ? 'R$ ' + parseFloat(ev.valor).toFixed(2).replace('.', ',') : '—';
-        const pagoTxt = ev.pagoEm ? spTime(ev.pagoEm) : '—';
+        const loc = [ev.cidade, ev.estado].filter(Boolean).join(', ');
+        const val = ev.valor ? 'R$ ' + parseFloat(ev.valor).toFixed(2).replace('.', ',') : '';
         const uaSafe = (ev.ua || '').replace(/</g, '&lt;');
         const isBr = ev.pais === 'Brazil';
-        return `<tr data-status="${ev.status}" data-placa="${(ev.placa||'').toLowerCase()}" data-pais="${isBr ? 'br' : 'int'}">
-      <td>${spTime(ev.criadoEm)}</td>
-      <td>${statusBadge(ev.status)}</td>
-      <td>${ev.placa || '—'}</td>
-      <td>${val}</td>
-      <td>${ev.visitaEm ? spTime(ev.visitaEm) : '—'}</td>
-      <td>${ev.consultouEm ? spTime(ev.consultouEm) : '—'}</td>
-      <td>${ev.pixGeradoEm ? spTime(ev.pixGeradoEm) : '—'}</td>
-      <td>${pagoTxt}</td>
-      <td>${ev.ip}</td>
-      <td>${loc || '—'}</td>
-      <td title="${uaSafe}">${deviceIcon} ${deviceLabel}</td>
-      <td class="ua" title="${uaSafe}">${uaSafe}</td>
-    </tr>`;
+        const deviceSvg = ev.mobile
+            ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/></svg>'
+            : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+        return '<tr data-status="' + ev.status + '" data-pais="' + (isBr ? 'br' : 'int') + '">'
+            + '<td>' + spTime(ev.criadoEm) + '</td>'
+            + '<td>' + statusBadge(ev.status) + '</td>'
+            + '<td class="td-placa">' + (ev.placa || '<span class="muted">—</span>') + '</td>'
+            + '<td class="td-val">' + (val || '<span class="muted">—</span>') + '</td>'
+            + '<td>' + (ev.consultouEm ? spTime(ev.consultouEm) : '<span class="muted">—</span>') + '</td>'
+            + '<td>' + (ev.pixGeradoEm ? spTime(ev.pixGeradoEm) : '<span class="muted">—</span>') + '</td>'
+            + '<td>' + (ev.pagoEm ? spTime(ev.pagoEm) : '<span class="muted">—</span>') + '</td>'
+            + '<td class="td-device" title="' + uaSafe + '">' + deviceSvg + ' ' + (ev.mobile ? 'Mobile' : 'Desktop') + '</td>'
+            + '<td>' + (loc || '<span class="muted">—</span>') + '</td>'
+            + '<td class="td-ip">' + ev.ip + '</td>'
+            + '</tr>';
     }).join('');
 
-    const encPw = encodeURIComponent(ADMIN_PASSWORD);
     const pagerLinks = [];
     for (let i = 1; i <= totalPages; i++) {
-        pagerLinks.push(`<a href="/painel?senha=${encPw}&page=${i}" class="${i===currentPage?'active':''}">${i}</a>`);
+        pagerLinks.push('<a href="/painel?page=' + i + '" class="pg' + (i === currentPage ? ' active' : '') + '">' + i + '</a>');
     }
 
     res.send(`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Painel Admin</title>
+<title>Admin — Free Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
+:root{--bg:#09090b;--card:#18181b;--border:#27272a;--border2:#3f3f46;--t1:#fafafa;--t2:#a1a1aa;--t3:#71717a;--t4:#52525b;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--green-bg:#052e16;--green-border:#14532d;--amber:#f59e0b;--amber-bg:#451a03;--amber-border:#78350f;--blue:#3b82f6;--blue-bg:#172554;--blue-border:#1e3a5f;--red:#ef4444;--red-bg:#450a0a;--red-border:#7f1d1d}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
-.top{background:#1e293b;padding:14px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #334155;flex-wrap:wrap}
-.top h1{font-size:16px;font-weight:700;flex:1}
-.top a{color:#94a3b8;font-size:13px;text-decoration:none;white-space:nowrap}
-.top a:hover{color:#fff}
-.stats{display:flex;gap:12px;padding:16px 20px;flex-wrap:wrap}
-.stat{background:#1e293b;border-radius:10px;padding:16px 20px;border:1px solid #334155;min-width:120px;flex:1}
-.stat .n{font-size:28px;font-weight:900;color:#6366f1}
-.stat .l{font-size:12px;color:#94a3b8;margin-top:2px}
-.wrap{padding:0 20px 40px;overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
-th{background:#1e293b;padding:9px 10px;text-align:left;color:#94a3b8;font-weight:600;
-   border-bottom:1px solid #334155;position:sticky;top:0;z-index:2;
-   overflow:hidden;min-width:60px;white-space:nowrap;user-select:none}
-.resizer{position:absolute;right:0;top:0;height:100%;width:5px;cursor:col-resize;background:transparent;z-index:3}
-.resizer:hover,.resizer.active{background:#6366f1}
-td{padding:8px 10px;border-bottom:1px solid #1a2535;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-tr:hover td{background:#1a2535}
-.badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;white-space:nowrap}
-.bv{background:#1e3a5f;color:#60a5fa}
-.bc2{background:#1a3030;color:#34d399}
-.bp{background:#2d2a10;color:#facc15}
-.bc{background:#1a2d1a;color:#4ade80}
-.ua{font-size:10px;color:#64748b;max-width:200px}
-.sub{padding:8px 20px 12px;font-size:13px;color:#64748b;display:flex;align-items:center;gap:16px}
-.pager{display:flex;gap:6px;flex-wrap:wrap;padding:0 20px 20px}
-.pager a{background:#1e293b;color:#94a3b8;padding:5px 11px;border-radius:6px;text-decoration:none;font-size:13px;border:1px solid #334155}
-.pager a:hover{background:#334155;color:#fff}
-.pager a.active{background:#6366f1;color:#fff;border-color:#6366f1}
+body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh;-webkit-font-smoothing:antialiased}
+
+/* Header */
+.header{display:flex;align-items:center;gap:16px;padding:16px 24px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.header-brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.header-dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0;box-shadow:0 0 8px #22c55e80}
+.header-title{font-size:14px;font-weight:600;color:var(--t1);white-space:nowrap}
+.header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hdr-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:500;font-family:inherit;cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--t2);transition:all .15s;text-decoration:none;white-space:nowrap}
+.hdr-btn:hover{background:var(--border);color:var(--t1)}
+.hdr-btn svg{flex-shrink:0}
+.hdr-btn.danger{color:var(--red);border-color:var(--red-border)}
+.hdr-btn.danger:hover{background:var(--red-bg);color:#fca5a5}
+
+/* Stats */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:20px 24px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px}
+.stat-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.stat-label{font-size:12px;font-weight:500;color:var(--t3);text-transform:uppercase;letter-spacing:0.5px}
+.stat-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center}
+.stat-icon.purple{background:#6366f115;color:var(--accent2)}
+.stat-icon.blue{background:#3b82f615;color:var(--blue)}
+.stat-icon.amber{background:#f59e0b15;color:var(--amber)}
+.stat-icon.green{background:#22c55e15;color:var(--green)}
+.stat-icon.red{background:#ef444415;color:var(--red)}
+.stat-value{font-size:28px;font-weight:800;letter-spacing:-1px;line-height:1}
+.stat-sub{display:inline-block;font-size:12px;font-weight:500;color:var(--t3);margin-left:6px;letter-spacing:0}
+
+/* Toolbar */
+.toolbar{display:flex;align-items:center;gap:10px;padding:12px 24px;border-top:1px solid var(--border);flex-wrap:wrap}
+.tool-select{appearance:none;-webkit-appearance:none;background:var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;border:1px solid var(--border);border-radius:8px;padding:8px 32px 8px 12px;color:var(--t2);font-size:12px;font-family:inherit;cursor:pointer;outline:none;transition:border-color .15s}
+.tool-select:focus{border-color:var(--accent)}
+.tool-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:500;font-family:inherit;cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--t3);transition:all .15s;white-space:nowrap}
+.tool-btn:hover{background:var(--border);color:var(--t1)}
+.tool-btn.active{border-color:var(--blue);color:var(--blue);background:var(--blue-bg)}
+.tool-spacer{flex:1}
+
+/* Table */
+.table-wrap{overflow-x:auto;padding:0 24px 24px;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:900px}
+thead{position:sticky;top:0;z-index:2}
+th{background:var(--card);padding:10px 14px;text-align:left;color:var(--t3);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap;color:var(--t2)}
+tr:hover td{background:#ffffff06}
+.muted{color:var(--t4)}
+.td-placa{font-weight:600;color:var(--t1);font-family:'SF Mono',SFMono-Regular,ui-monospace,monospace;font-size:12px;letter-spacing:0.5px}
+.td-val{font-weight:600;color:var(--green)}
+.td-device{display:flex;align-items:center;gap:6px;color:var(--t3)}
+.td-ip{font-family:'SF Mono',SFMono-Regular,ui-monospace,monospace;font-size:11px;color:var(--t4)}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;letter-spacing:0.2px}
+.badge::before{content:'';width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.st-visit{background:var(--blue-bg);color:#93c5fd;border:1px solid var(--blue-border)}
+.st-visit::before{background:var(--blue)}
+.st-search{background:#042f2e;color:#5eead4;border:1px solid #115e59}
+.st-search::before{background:#14b8a6}
+.st-pix{background:var(--amber-bg);color:#fcd34d;border:1px solid var(--amber-border)}
+.st-pix::before{background:var(--amber)}
+.st-paid{background:var(--green-bg);color:#86efac;border:1px solid var(--green-border)}
+.st-paid::before{background:var(--green)}
+
+/* Pagination */
+.pager{display:flex;gap:4px;padding:0 24px 24px}
+.pg{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;font-size:13px;font-weight:500;color:var(--t3);text-decoration:none;border:1px solid transparent;transition:all .15s}
+.pg:hover{background:var(--card);color:var(--t1);border-color:var(--border)}
+.pg.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:#00000080;backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px}
+.modal-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:32px;width:min(420px,100%);box-shadow:0 24px 80px #00000060}
+.modal-title{font-size:16px;font-weight:700;color:var(--t1);margin-bottom:8px}
+.modal-desc{font-size:13px;color:var(--t3);margin-bottom:24px;line-height:1.5}
+.modal-input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:11px 14px;color:var(--t1);font-size:14px;font-family:inherit;outline:none;margin-bottom:16px;transition:border-color .15s}
+.modal-input:focus{border-color:var(--accent)}
+.modal-btns{display:flex;gap:10px}
+.modal-btns button{flex:1;padding:11px;border-radius:8px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;border:none;transition:all .15s}
+.btn-cancel{background:var(--border);color:var(--t2)}
+.btn-cancel:hover{background:var(--border2);color:var(--t1)}
+.btn-danger{background:var(--red);color:#fff}
+.btn-danger:hover{background:#dc2626}
+.modal-err{color:var(--red);font-size:12px;text-align:center;margin-top:12px;display:none}
+
+/* Empty state */
+.empty-state{text-align:center;padding:60px 20px;color:var(--t4)}
+.empty-state svg{margin-bottom:12px;opacity:.4}
+
+/* Responsive */
+@media(max-width:768px){
+  .header{padding:12px 16px;gap:10px}
+  .header-title{font-size:13px}
+  .stats-grid{grid-template-columns:repeat(2,1fr);gap:8px;padding:12px 16px}
+  .stat-card{padding:14px}
+  .stat-value{font-size:22px}
+  .stat-icon{width:28px;height:28px;border-radius:6px}
+  .stat-icon svg{width:14px;height:14px}
+  .toolbar{padding:10px 16px;gap:8px}
+  .table-wrap{padding:0 16px 16px}
+  .pager{padding:0 16px 16px}
+  .hdr-btn span{display:none}
+}
+@media(max-width:480px){
+  .stats-grid{grid-template-columns:repeat(2,1fr);gap:6px;padding:10px 12px}
+  .stat-card{padding:12px}
+  .stat-value{font-size:20px}
+  .stat-label{font-size:10px}
+  .header{padding:10px 12px}
+  .toolbar{padding:8px 12px}
+  .table-wrap{padding:0 12px 12px}
+  .pager{padding:0 12px 12px}
+  .hdr-btn{padding:6px 10px;font-size:11px}
+}
 </style></head><body>
-<div class="top">
-  <h1>📊 Painel Admin — freeflow-pedagio.site</h1>
-  <a href="/painel/export?senha=${encPw}">⬇ Exportar JSON</a>
-  <a href="#" id="btnLimpar" style="color:#f87171">🗑 Limpar Dados</a>
-</div>
-<div class="stats">
-  <div class="stat"><div class="n">${total}</div><div class="l">Sessões totais</div></div>
-  <div class="stat"><div class="n">${visitas}</div><div class="l">👀 Visitaram</div></div>
-  <div class="stat"><div class="n">${consultou} <span style="font-size:14px;color:#94a3b8">${pct(consultou,visitas)}%</span></div><div class="l">🔍 Consultaram placa</div></div>
-  <div class="stat"><div class="n">${pixGerados} <span style="font-size:14px;color:#94a3b8">${pct(pixGerados,visitas)}%</span></div><div class="l">💳 PIX gerados</div></div>
-  <div class="stat"><div class="n">${pagamentos} <span style="font-size:14px;color:#94a3b8">${pct(pagamentos,visitas)}%</span></div><div class="l">✅ Pagamentos</div></div>
-  <div class="stat"><div class="n" style="color:#4ade80">R$&nbsp;${receita.toFixed(2).replace('.',',')}</div><div class="l">💰 Receita total</div></div>
-  <div class="stat"><div class="n">${uniqueIPs}</div><div class="l">IPs únicos</div></div>
-</div>
-<div class="sub" style="flex-wrap:wrap;gap:10px;">
-  <span>Página ${currentPage} de ${totalPages} — ${total} eventos totais — Horário: São Paulo (UTC-3)</span>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-    <input id="filtroPlaca" type="text" placeholder="Filtrar placa..." style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:5px 10px;color:#fff;font-size:12px;outline:none;width:130px">
-    <select id="filtroStatus" style="background:#0f172a;border:1px solid #334155;border-radius:6px;padding:5px 10px;color:#fff;font-size:12px;outline:none;">
-      <option value="">Todos status</option>
-      <option value="visita">👀 Visita</option>
-      <option value="consultou">🔍 Consultou</option>
-      <option value="pix_gerado">💳 PIX Gerado</option>
-      <option value="pago">✅ Pago</option>
-    </select>
-    <button id="btnInt" style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:5px 12px;color:#94a3b8;font-size:12px;cursor:pointer;white-space:nowrap">🌐 Ver bots/internacionais</button>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-brand">
+    <div class="header-dot"></div>
+    <span class="header-title">Free Flow Admin</span>
+  </div>
+  <div class="header-actions">
+    <a href="/painel/export" class="hdr-btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span>Exportar</span>
+    </a>
+    <button id="btnClear" class="hdr-btn danger">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+      <span>Limpar</span>
+    </button>
+    <a href="/painel/logout" class="hdr-btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span>Sair</span>
+    </a>
   </div>
 </div>
-<div class="wrap">
+
+<!-- Stats -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-header">
+      <span class="stat-label">Receita</span>
+      <div class="stat-icon green"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
+    </div>
+    <div class="stat-value" style="color:var(--green)">R$&nbsp;${receita.toFixed(2).replace('.',',')}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-header">
+      <span class="stat-label">Pagamentos</span>
+      <div class="stat-icon green"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></div>
+    </div>
+    <div class="stat-value">${pagamentos}<span class="stat-sub">${pct(pagamentos,visitas)}%</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-header">
+      <span class="stat-label">PIX Gerados</span>
+      <div class="stat-icon amber"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg></div>
+    </div>
+    <div class="stat-value">${pixGerados}<span class="stat-sub">${pct(pixGerados,visitas)}%</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-header">
+      <span class="stat-label">Consultas</span>
+      <div class="stat-icon blue"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></div>
+    </div>
+    <div class="stat-value">${consultou}<span class="stat-sub">${pct(consultou,visitas)}%</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-header">
+      <span class="stat-label">Visitas BR</span>
+      <div class="stat-icon purple"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></div>
+    </div>
+    <div class="stat-value">${brEvents}<span class="stat-sub">de ${total}</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-header">
+      <span class="stat-label">IPs Únicos</span>
+      <div class="stat-icon purple"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/><line x1="2" y1="12" x2="22" y2="12"/></svg></div>
+    </div>
+    <div class="stat-value">${uniqueIPs}</div>
+  </div>
+</div>
+
+<!-- Toolbar -->
+<div class="toolbar">
+  <select id="filtroStatus" class="tool-select">
+    <option value="">Todos os status</option>
+    <option value="visita">Visita</option>
+    <option value="consultou">Consultou</option>
+    <option value="pix_gerado">PIX Gerado</option>
+    <option value="pago">Pago</option>
+  </select>
+  <button id="btnInt" class="tool-btn">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+    Internacionais (${intEvents})
+  </button>
+  <div class="tool-spacer"></div>
+</div>
+
+<!-- Table -->
+<div class="table-wrap">
 <table>
-<colgroup id="colgroup">
-  <col id="col0" style="width:130px"><col id="col1" style="width:120px"><col id="col2" style="width:80px">
-  <col id="col3" style="width:80px"><col id="col4" style="width:130px"><col id="col5" style="width:130px">
-  <col id="col6" style="width:130px"><col id="col7" style="width:130px"><col id="col8" style="width:110px">
-  <col id="col9" style="width:160px"><col id="col10" style="width:80px"><col id="col11" style="width:200px">
-</colgroup>
 <thead><tr>
-  <th>1ª Visita</th><th>Status</th><th>Placa</th><th>Valor</th>
-  <th>Visitou em</th><th>Consultou em</th><th>PIX gerado em</th><th>Pago em</th>
-  <th>IP</th><th>Localização</th><th>Dispositivo</th><th>Navegador (UA)</th>
+  <th>Data</th><th>Status</th><th>Placa</th><th>Valor</th>
+  <th>Consultou</th><th>PIX Gerado</th><th>Pago em</th>
+  <th>Dispositivo</th><th>Local</th><th>IP</th>
 </tr></thead>
-<tbody id="tBody">${rows || '<tr><td colspan="12" style="text-align:center;padding:40px;color:#64748b">Nenhum evento ainda</td></tr>'}</tbody>
+<tbody id="tBody">${rows || '<tr><td colspan="10" class="empty-state"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><br>Nenhum evento registrado</td></tr>'}</tbody>
 </table>
 </div>
-<div class="pager">${pagerLinks.join('')}</div>
+${totalPages > 1 ? '<div class="pager">' + pagerLinks.join('') + '</div>' : ''}
+
 <script>
-document.getElementById('btnLimpar').addEventListener('click', function(e){
-  e.preventDefault();
-  var modal = document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:#0009;display:flex;align-items:center;justify-content:center;z-index:9999';
-  modal.innerHTML = '<div style="background:#1e293b;border-radius:14px;padding:32px;width:min(360px,92vw);border:1px solid #334155;box-shadow:0 20px 60px #0008">'
-    +'<h3 style="color:#f87171;margin:0 0 8px;font-size:17px">🗑 Limpar todos os dados?</h3>'
-    +'<p style="color:#94a3b8;font-size:13px;margin:0 0 20px">Esta ação é irreversível. Todos os registros serão apagados permanentemente.</p>'
-    +'<input type="password" id="clearPw" placeholder="Digite a senha para confirmar" style="width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:11px 13px;color:#fff;font-size:14px;outline:none;box-sizing:border-box;margin-bottom:14px">'
-    +'<div style="display:flex;gap:10px">'
-    +'<button id="clearCancel" style="flex:1;background:#334155;color:#94a3b8;border:none;border-radius:8px;padding:11px;font-size:14px;cursor:pointer">Cancelar</button>'
-    +'<button id="clearConfirm" style="flex:1;background:#dc2626;color:#fff;border:none;border-radius:8px;padding:11px;font-size:14px;font-weight:700;cursor:pointer">Apagar tudo</button>'
+// Clear modal
+document.getElementById('btnClear').addEventListener('click', function(){
+  var ov = document.createElement('div');
+  ov.className='modal-overlay';
+  ov.innerHTML='<div class="modal-card">'
+    +'<div class="modal-title">Limpar todos os dados</div>'
+    +'<p class="modal-desc">Esta ação é irreversível. Todos os registros serão apagados permanentemente do sistema.</p>'
+    +'<input type="password" id="clearPw" class="modal-input" placeholder="Confirme com a senha" autocomplete="off">'
+    +'<div class="modal-btns">'
+    +'<button class="btn-cancel" id="modalCancel">Cancelar</button>'
+    +'<button class="btn-danger" id="modalConfirm">Apagar tudo</button>'
     +'</div>'
-    +'<p id="clearErr" style="color:#f87171;font-size:12px;margin:10px 0 0;display:none;text-align:center">Senha incorreta.</p>'
+    +'<p class="modal-err" id="modalErr">Senha incorreta.</p>'
     +'</div>';
-  document.body.appendChild(modal);
-  document.getElementById('clearCancel').onclick = function(){ document.body.removeChild(modal); };
-  modal.addEventListener('click', function(ev){ if(ev.target===modal) document.body.removeChild(modal); });
-  document.getElementById('clearConfirm').onclick = function(){
-    var pw = document.getElementById('clearPw').value;
-    fetch('/painel/clear?senha='+encodeURIComponent(pw))
-      .then(function(r){ return r.json(); })
+  document.body.appendChild(ov);
+  document.getElementById('clearPw').focus();
+  document.getElementById('modalCancel').onclick=function(){document.body.removeChild(ov);};
+  ov.addEventListener('click',function(e){if(e.target===ov)document.body.removeChild(ov);});
+  document.getElementById('modalConfirm').onclick=function(){
+    fetch('/painel/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})})
+      .then(function(r){return r.json();})
       .then(function(d){
-        if(d.ok){ document.body.removeChild(modal); window.location.href='/painel?senha='+encodeURIComponent(pw); }
-        else { document.getElementById('clearErr').style.display='block'; }
+        if(d.ok){document.body.removeChild(ov);window.location.reload();}
+        else{document.getElementById('modalErr').style.display='block';}
       })
-      .catch(function(){ document.getElementById('clearErr').style.display='block'; });
+      .catch(function(){document.getElementById('modalErr').style.display='block';});
   };
 });
 
-// Filtro client-side
+// Filters
 (function(){
-  var filtroPlaca = document.getElementById('filtroPlaca');
-  var filtroStatus = document.getElementById('filtroStatus');
-  var btnInt = document.getElementById('btnInt');
-  var mostrarInt = false;
+  var filtroStatus=document.getElementById('filtroStatus');
+  var btnInt=document.getElementById('btnInt');
+  var showInt=false;
 
-  // Contar internacionais
-  var intRows = document.querySelectorAll('#tBody tr[data-pais="int"]');
-  var intCount = intRows.length;
-  if(btnInt) btnInt.textContent = '🌐 Ver bots/internacionais (' + intCount + ')';
-
-  function aplicarFiltro(){
-    var pl = (filtroPlaca.value||'').toLowerCase().trim();
-    var st = filtroStatus.value;
+  function apply(){
+    var st=filtroStatus.value;
     document.querySelectorAll('#tBody tr[data-status]').forEach(function(tr){
-      var matchP = !pl || (tr.dataset.placa||'').includes(pl);
-      var matchS = !st || tr.dataset.status === st;
-      var matchPais = mostrarInt || tr.dataset.pais === 'br';
-      tr.style.display = (matchP && matchS && matchPais) ? '' : 'none';
+      var matchS=!st||tr.dataset.status===st;
+      var matchP=showInt||tr.dataset.pais==='br';
+      tr.style.display=(matchS&&matchP)?'':'none';
     });
   }
-
-  aplicarFiltro(); // Ocultar internacionais no load
-
-  if(filtroPlaca) filtroPlaca.addEventListener('input', aplicarFiltro);
-  if(filtroStatus) filtroStatus.addEventListener('change', aplicarFiltro);
-  if(btnInt) btnInt.addEventListener('click', function(){
-    mostrarInt = !mostrarInt;
-    btnInt.textContent = mostrarInt
-      ? '🇧🇷 Ocultar internacionais (' + intCount + ')'
-      : '🌐 Ver bots/internacionais (' + intCount + ')';
-    btnInt.style.color = mostrarInt ? '#60a5fa' : '#94a3b8';
-    btnInt.style.borderColor = mostrarInt ? '#3b82f6' : '#334155';
-    aplicarFiltro();
-  });
-})();
-
-(function(){
-  var ths = document.querySelectorAll('thead th');
-  var cols = document.querySelectorAll('#colgroup col');
-  ths.forEach(function(th, i){
-    var r = document.createElement('div');
-    r.className = 'resizer';
-    th.appendChild(r);
-    var startX, startW;
-    r.addEventListener('mousedown', function(e){
-      startX = e.pageX;
-      startW = cols[i] ? parseInt(cols[i].style.width) || th.offsetWidth : th.offsetWidth;
-      r.classList.add('active');
-      document.body.style.cursor = 'col-resize';
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    function onMove(e){
-      var w = Math.max(50, startW + (e.pageX - startX));
-      if(cols[i]) cols[i].style.width = w + 'px';
-    }
-    function onUp(){
-      r.classList.remove('active');
-      document.body.style.cursor = '';
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    }
+  apply();
+  filtroStatus.addEventListener('change',apply);
+  btnInt.addEventListener('click',function(){
+    showInt=!showInt;
+    btnInt.classList.toggle('active',showInt);
+    apply();
   });
 })();
 </script>
 </body></html>`);
 });
-
 // ---------- HEALTH (hidden) ----------
 app.get('/', (req, res) => res.status(404).send('Not found'));
 
