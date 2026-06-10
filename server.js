@@ -6,6 +6,7 @@ const app = express();
 const ALLOWED_ORIGINS = [
     'https://www.freeflow-pedagio.site',
     'https://freeflow-pedagio.site',
+    'https://api.freeflow-pedagio.site',
 ];
 
 const INTERNAL_KEY = process.env.INTERNAL_KEY || 'fd-k9x2mq7v4n8p1w6j3t5r';
